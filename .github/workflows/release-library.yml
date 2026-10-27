@@ -1,0 +1,83 @@
+# Publishing a library version: push the headers and version files, then publish a GitHub
+# release tagged v<version> (e.g. v3.0.1) with each board's lib<TARGET>_<FW>.a attached.
+# This builds Pluto_Libs_v<version>.zip from the tagged files and those .a files, attaches it,
+# and removes the loose .a files. See RELEASING.md.
+name: Release library
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to (re)build, e.g. v3.0.1
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Is this a library release?
+        id: kind
+        run: |
+          # Library tags are v<version>; the version file at the tag must say the same.
+          # Anything else (e.g. the build tools release) is left alone.
+          version="${TAG#v}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]] || [[ ! -f version ]] \
+             || ! grep -q "Repo_Version *= *${version}\b" <(tr -d '\r' < version); then
+            echo "Not a library release ($TAG); nothing to do."
+            echo "library=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "library=true" >> "$GITHUB_OUTPUT"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check the library tree
+        if: steps.kind.outputs.library == 'true'
+        run: bash .github/scripts/library.sh check
+
+      - name: Wait for the .a files
+        if: steps.kind.outputs.library == 'true'
+        run: |
+          # Uploads can still be running when the release is published.
+          expected=$(bash .github/scripts/library.sh expect "${{ steps.kind.outputs.version }}")
+          echo "Expecting:"; echo "$expected"
+          for i in $(seq 1 60); do
+            have=$(gh release view "$TAG" --json assets --jq '.assets[] | select(.state == "uploaded") | .name')
+            missing=$(comm -23 <(sort <<< "$expected") <(sort <<< "$have"))
+            [[ -z "$missing" ]] && exit 0
+            sleep 10
+          done
+          echo "::error::Still missing after 10 minutes: $(echo $missing)"
+          exit 1
+
+      - name: Build Pluto_Libs_v${{ steps.kind.outputs.version }}.zip
+        if: steps.kind.outputs.library == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/a"
+          gh release download "$TAG" --pattern '*.a' --dir "$RUNNER_TEMP/a"
+          bash .github/scripts/library.sh build "${{ steps.kind.outputs.version }}" "$RUNNER_TEMP/a" \
+            "$RUNNER_TEMP/Pluto_Libs_v${{ steps.kind.outputs.version }}.zip"
+
+      - name: Attach the zip and remove the loose .a files
+        if: steps.kind.outputs.library == 'true'
+        run: |
+          gh release upload "$TAG" "$RUNNER_TEMP/Pluto_Libs_v${{ steps.kind.outputs.version }}.zip" --clobber
+          for a in $(gh release view "$TAG" --json assets --jq '.assets[].name | select(endswith(".a"))'); do
+            gh release delete-asset "$TAG" "$a" --yes
+          done
+          echo "Published Pluto_Libs_v${{ steps.kind.outputs.version }}.zip on $TAG." >> "$GITHUB_STEP_SUMMARY"
+          echo "PlutoBlocks uses it once plutoblocks.json names ${{ steps.kind.outputs.version }}." >> "$GITHUB_STEP_SUMMARY"

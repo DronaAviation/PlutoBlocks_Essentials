@@ -1,0 +1,25 @@
+name: Check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Library tree is complete
+        run: bash .github/scripts/library.sh check
+      - name: plutoblocks.json names library versions
+        run: |
+          python3 - <<'EOF'
+          import json
+          c = json.load(open("plutoblocks.json"))
+          fams = json.load(open("families.json"))
+          assert isinstance(c, dict), "plutoblocks.json must be an object"
+          for k, v in c.items():
+              assert k in fams or k == "toolchain", f"unknown key {k!r}"
+              assert isinstance(v, str) and v.strip(), f"{k}: needs a version string like \"3.0.0\""
+          print("plutoblocks.json ok:", c)
+          EOF
