@@ -1,0 +1,11 @@
+# Keep every file byte for byte (the version files and Makefile use CRLF).
+* -text
+
+# Not part of the library zip.
+.github export-ignore
+.gitattributes export-ignore
+families.json export-ignore
+plutoblocks.json export-ignore
+README.md export-ignore
+RELEASING.md export-ignore
+.gitignore export-ignore
